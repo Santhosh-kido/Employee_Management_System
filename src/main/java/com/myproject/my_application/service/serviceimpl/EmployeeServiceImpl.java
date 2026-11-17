@@ -1,24 +1,30 @@
 package com.myproject.my_application.service.serviceimpl;
 
 import java.time.LocalDate;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.regex.Pattern;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import com.myproject.my_application.entity.EmployeeDetails;
+import com.myproject.my_application.exception.EmployeeException;
 import com.myproject.my_application.repository.EmployeeDeatilsRepo;
 import com.myproject.my_application.requests.AddEmployeeReq;
 import com.myproject.my_application.service.EmployeeService;
 
 @Service
 public class EmployeeServiceImpl implements EmployeeService {
-    @Autowired
-    EmployeeDeatilsRepo empRepo;
+    private static final Pattern EMAIL_PATTERN =
+            Pattern.compile("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
+
+    final EmployeeDeatilsRepo empRepo;
+
+    EmployeeServiceImpl(EmployeeDeatilsRepo empRepo) {
+        this.empRepo = empRepo;
+    }
 
     // Fetch All Employee
     @Override
@@ -33,37 +39,33 @@ public class EmployeeServiceImpl implements EmployeeService {
     // Fetch Employee By Id
     @Override
     public EmployeeDetails fetchEmployeeId(int id) {
-        
-        Optional<EmployeeDetails> emp = empRepo.findById(id);
-        if (emp.isEmpty()) {
-            System.out.println("Employee not found!!");
-            return emp.get();
-        }
-        return emp.get();
+        return empRepo.findById(id)
+                .orElseThrow(() -> new EmployeeException(HttpStatus.NOT_FOUND, "Employee not found."));
     }
 
     // Search Employee By Name
     @Override
     public List<EmployeeDetails> searchByName(String name) {
-        List<EmployeeDetails> emp = empRepo.findByEmpNameIgnoreCaseContaining(name);
-        if (emp.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return emp;
+        return empRepo.findByEmpNameIgnoreCaseContaining(name);
     }
 
     // Add New Employee
     @Override
     public String addNewEmployee(AddEmployeeReq addEmpReq) {
-        Optional<EmployeeDetails> emp = empRepo.findByEmpNameAndDeptAndMailAndSalary(addEmpReq.getEmpName(),addEmpReq.getDept(),addEmpReq.getMail(),addEmpReq.getSalary());
-        if (emp.isPresent()) {
-            return "Employee alreday Exists!!";
+        if (addEmpReq == null) {
+            throw new EmployeeException(HttpStatus.BAD_REQUEST, "Request body is invalid.");
         }
+        validateEmployee(addEmpReq.getEmpName(), addEmpReq.getMail(), addEmpReq.getDept(), addEmpReq.getSalary());
+        String empName = addEmpReq.getEmpName().trim();
+        String mail = normalizeMail(addEmpReq.getMail());
+        String dept = addEmpReq.getDept().trim();
+        ensureEmailIsAvailable(mail);
+
         EmployeeDetails empDetails = new EmployeeDetails();
-        empDetails.setDept(addEmpReq.getDept());
+        empDetails.setDept(dept);
         empDetails.setJoiningDt(LocalDate.now());
-        empDetails.setEmpName(addEmpReq.getEmpName());
-        empDetails.setMail(addEmpReq.getMail());
+        empDetails.setEmpName(empName);
+        empDetails.setMail(mail);
         empDetails.setSalary(addEmpReq.getSalary());
 
         empRepo.save(empDetails);
@@ -73,35 +75,78 @@ public class EmployeeServiceImpl implements EmployeeService {
 
     @Override
     public String updateEmployee(EmployeeDetails empDtls) {
-        String response = "";
-        Optional<EmployeeDetails> optl = empRepo.findById(empDtls.getEmpId());
-        if (optl.isPresent()) {
-            EmployeeDetails empDetails = optl.get();
-            empDetails.setDept(empDtls.getDept());
-            empDetails.setEmpName(empDtls.getEmpName());
-            // empDetails.setJoiningDt(empDtls.getJoiningDt());
-            empDetails.setSalary(empDtls.getSalary());
-            empDetails.setMail(empDtls.getMail());
-            empRepo.save(empDetails);
-
-            response = "SUCCESS";
-
-        } else {
-            response = "FAILURE";
+        if (empDtls == null) {
+            throw new EmployeeException(HttpStatus.BAD_REQUEST, "Request body is invalid.");
         }
-        return response;
+        Integer empId = empDtls.getEmpId();
+        EmployeeDetails existing = empId == null ? null : empRepo.findById(empId).orElse(null);
+        if (existing == null) {
+            throw new EmployeeException(HttpStatus.NOT_FOUND, "Employee not found.");
+        }
+
+        validateEmployee(empDtls.getEmpName(), empDtls.getMail(), empDtls.getDept(), empDtls.getSalary());
+        String empName = empDtls.getEmpName().trim();
+        String mail = normalizeMail(empDtls.getMail());
+        String dept = empDtls.getDept().trim();
+        if (empRepo.existsByMailIgnoreCaseAndEmpIdNot(mail, empId)) {
+            throw emailAlreadyExists();
+        }
+
+        if (Objects.equals(existing.getEmpName(), empName)
+                && Objects.equals(existing.getMail() == null ? null : normalizeMail(existing.getMail()), mail)
+                && Objects.equals(existing.getDept(), dept)
+                && Double.compare(existing.getSalary(), empDtls.getSalary()) == 0) {
+            throw new EmployeeException(HttpStatus.CONFLICT, "Employee is already up to date.");
+        }
+
+        existing.setEmpName(empName);
+        existing.setMail(mail);
+        existing.setDept(dept);
+        existing.setSalary(empDtls.getSalary());
+        empRepo.save(existing);
+        return "Employee Updated Successfully!!";
     }
 
     // Delete an Employee
     @Override
     public String delEmployee(int id) {
-        if (empRepo.existsById(id)) {
-            empRepo.deleteById(id);
-            return "Employee Deleted Successfully!!";
-        } else {
-            return "Employee Not found!!";
+        if (!empRepo.existsById(id)) {
+            throw new EmployeeException(HttpStatus.NOT_FOUND, "Employee not found.");
         }
-
+        empRepo.deleteById(id);
+        return "Employee Deleted Successfully!!";
     }
 
+    private void validateEmployee(String empName, String mail, String dept, double salary) {
+        if (empName == null || empName.trim().isEmpty()) {
+            throw new EmployeeException(HttpStatus.BAD_REQUEST, "Name is required.");
+        }
+        if (mail == null || mail.trim().isEmpty()) {
+            throw new EmployeeException(HttpStatus.BAD_REQUEST, "Email is required.");
+        }
+        if (!EMAIL_PATTERN.matcher(mail.trim()).matches()) {
+            throw new EmployeeException(HttpStatus.BAD_REQUEST, "Email must be valid.");
+        }
+        if (dept == null || dept.trim().isEmpty()) {
+            throw new EmployeeException(HttpStatus.BAD_REQUEST, "Department is required.");
+        }
+        if (!Double.isFinite(salary) || salary < 0) {
+            throw new EmployeeException(HttpStatus.BAD_REQUEST, "Salary must be 0 or more.");
+        }
+    }
+
+    private String normalizeMail(String mail) {
+        return mail.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private void ensureEmailIsAvailable(String mail) {
+        if (empRepo.existsByMailIgnoreCase(mail)) {
+            throw emailAlreadyExists();
+        }
+    }
+
+    private EmployeeException emailAlreadyExists() {
+        return new EmployeeException(HttpStatus.CONFLICT,
+                "An employee with this email already exists.");
+    }
 }

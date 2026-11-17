@@ -17,5 +17,7 @@ public interface EmployeeDeatilsRepo extends JpaRepository<EmployeeDetails, Inte
     Optional<EmployeeDetails> findByEmpNameAndDeptAndMailAndSalary(String empName, String dept, String mail,
             double salary);
 
-    
+    boolean existsByMailIgnoreCase(String mail);
+
+    boolean existsByMailIgnoreCaseAndEmpIdNot(String mail, Integer empId);
 }
